@@ -2,7 +2,7 @@ Manifest-Version: 1.0
 Bundle-ManifestVersion: 2
 Bundle-Name: com.dynatrace.diagnostics.plugin.UrlMonitor
 Bundle-SymbolicName: com.dynatrace.diagnostics.plugin.UrlMonitor;singleton:=true
-Bundle-Version: 5.0.0.3773
+Bundle-Version: 2.0
 Bundle-ClassPath: .,
  lib/commons-codec-1.4.jar,
  lib/commons-logging-1.1.1.jar,
