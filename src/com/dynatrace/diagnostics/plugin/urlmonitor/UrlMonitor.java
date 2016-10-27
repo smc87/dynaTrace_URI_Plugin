@@ -52,6 +52,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Monitor which requests URLs via HTTP GET/POST/HEAD and returns measures for the requests.
@@ -59,6 +61,9 @@ import java.util.logging.Logger;
  * possible authentication schemes are basic and NTLM.
  * Proxies are supported.
  */
+
+
+
 public class UrlMonitor implements Monitor, Migrator {
 
 	private static final int READ_CHUNK_SIZE = 1024;
@@ -87,6 +92,7 @@ public class UrlMonitor implements Monitor, Migrator {
 
 	private static final String CONFIG_MATCH_CONTENT = "matchContent";
 	private static final String CONFIG_SEARCH_STRING = "searchString";
+	private static final String CONFIG_SEARCH_STRING2 = "searchString2";
 	private static final String CONFIG_COMPARE_BYTES = "compareBytes";
 
 	private static final String CONFIG_SERVER_AUTH = "serverAuth";
@@ -107,6 +113,7 @@ public class UrlMonitor implements Monitor, Migrator {
 	private static final String METRIC_GROUP = "URL Monitor";
 	private static final String MSR_HOST_REACHABLE = "HostReachable";
 	private static final String MSR_HEADER_SIZE = "HeaderSize";
+	private static final String MSR_EXTRACTED_CONTENT = "ExtractedContent";
 	private static final String MSR_FIRST_RESPONSE_DELAY = "FirstResponseDelay";
 	private static final String MSR_RESPONSE_COMPLETE_TIME = "ResponseCompleteTime";
 	private static final String MSR_RESPONSE_SIZE = "ResponseSize";
@@ -125,7 +132,7 @@ public class UrlMonitor implements Monitor, Migrator {
 	private ThreadSafeClientConnManager connectionManager;
 
 
-	private enum MatchContent {disabled, successIfMatch, errorIfMatch, bytesMatch}
+	private enum MatchContent {disabled, successIfMatch, errorIfMatch, bytesMatch, extractContent}
 
 	private Config config;
 
@@ -170,6 +177,7 @@ public class UrlMonitor implements Monitor, Migrator {
 		long connectionCloseDelay = 0;
 		boolean verified = false;
 		long time;
+		int extractedInt = 0;
 		//modified by Robert Kühn, robert.kuehn@t-systems.com
 		//default values for socket/connection timeout
 		int connectionTimedOut = 0;
@@ -242,17 +250,52 @@ public class UrlMonitor implements Monitor, Migrator {
 					if(!verified) {
 						messageBuffer.append("Expected ").append(config.compareBytes).append(" bytes, but was ").append(inputSize).append(" bytes");
 					}
-				} else if (config.matchContent != MatchContent.disabled) {
+				} else if (config.matchContent != MatchContent.disabled && config.matchContent == MatchContent.extractContent) {
+				//Code for extract result
+					try {
+						String pageContent = buf.toString();
+						Pattern p = Pattern.compile(config.searchString+"(.*?)"+config.searchString2);
+						Matcher m = p.matcher(pageContent);
+						String extractedString;
+						if (m.find()) {
+							extractedString = m.group(1);
+							extractedInt = Integer.parseInt(extractedString);
+						} else {
+						    status.setStatusCode(Status.StatusCode.PartialSuccess);
+							status.setMessage("Unable to extract string");
+						    return status;
+						}
+						//String extractedString = pageContent.substring(pageContent.lastIndexOf(config.searchString) + 1, pageContent.indexOf(config.searchString2));
+						boolean found = buf.toString().contains(config.searchString);
+							verified = found;
+							if(!verified)
+								messageBuffer.append("Expected string \"").append(config.searchString).append("\" didn't match.");										
+					} catch (Exception ex) {
+						messageBuffer.append("Capturing the response content failed");
+						status.setException(ex);
+						if (log.isLoggable(Level.SEVERE))
+							log.severe(status.getMessage() + ": " + ex);
+					    status.setStatusCode(Status.StatusCode.PartialSuccess);
+						status.setMessage(messageBuffer.toString());
+					    return status;
+					}
+				} else if (config.matchContent != MatchContent.disabled && config.matchContent != MatchContent.extractContent) {
 					try {
 						boolean found = buf.toString().contains(config.searchString);
 						if (config.matchContent == MatchContent.successIfMatch) {
 							verified = found;
-							if(!verified)
+							if(!verified) {
 								messageBuffer.append("Expected string \"").append(config.searchString).append("\" didn't match.");
+								log.warning("Did not match - HTML page content below:");
+								log.warning(buf.toString());
+							}
 						} else { // error if match
 							verified = !found;
-							if(!verified)
+							if(!verified) {
 								messageBuffer.append("Expected string \"").append(config.searchString).append("\" matched.");
+								log.warning("Did not match - HTML page content below:");
+								log.warning(buf.toString());
+							}
 						}
 					} catch (Exception ex) {
 						messageBuffer.append("Verifying the response content failed");
@@ -362,6 +405,10 @@ public class UrlMonitor implements Monitor, Migrator {
 				for (MonitorMeasure measure : measures)
 					measure.setValue(verified ? 1 : 0);
 			}
+			if ((measures = env.getMonitorMeasures(METRIC_GROUP, MSR_EXTRACTED_CONTENT)) != null) {
+				for (MonitorMeasure measure : measures)
+					measure.setValue(extractedInt);
+			}
 		}
 		//modified by Robert Kühn, robert.kuehn@t-systems.com
 		//set connection timeout
@@ -416,9 +463,12 @@ public class UrlMonitor implements Monitor, Migrator {
 			config.matchContent = MatchContent.errorIfMatch;
 		else if ("Expected size in bytes".equals(matchContent))
 			config.matchContent = MatchContent.bytesMatch;
+		else if ("Extract content as measure".equals(matchContent))
+			config.matchContent = MatchContent.extractContent;
 		else
 			config.matchContent = MatchContent.disabled;
 		config.searchString = env.getConfigString(CONFIG_SEARCH_STRING) == null ? "" : env.getConfigString(CONFIG_SEARCH_STRING);
+		config.searchString2 = env.getConfigString(CONFIG_SEARCH_STRING2) == null ? "" : env.getConfigString(CONFIG_SEARCH_STRING2);
 		config.compareBytes = env.getConfigLong(CONFIG_COMPARE_BYTES) == null ? 0 : env.getConfigLong(CONFIG_COMPARE_BYTES);
 		config.basicServerAuth = env.getConfigBoolean(CONFIG_BASIC_SERVER_AUTH) == null ? false : env.getConfigBoolean(CONFIG_BASIC_SERVER_AUTH);
 		config.serverAuth = env.getConfigBoolean(CONFIG_SERVER_AUTH) == null ? false : env.getConfigBoolean(CONFIG_SERVER_AUTH);
@@ -587,6 +637,7 @@ public class UrlMonitor implements Monitor, Migrator {
 		// verification
 		MatchContent matchContent;
 		String searchString;
+		String searchString2;
 //		int minOccurrences;
 //		int maxOccurrences;
 		// server authentification
